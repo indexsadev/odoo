@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+        <template id="page_acuse">
+            <style>
+                .table-acuse {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 10px;
+                }
+                .table-acuse th, .table-acuse td {
+                    border: 2px solid #000;
+                    padding: 6px;
+                    font-size: 16px;
+                    font-family: DejaVu Sans, Arial, sans-serif;
+                }
+                .table-acuse th {
+                    font-weight: 700 !important;
+                    text-align: center;
+                }
+            </style>
+            <div class="page">
+                <div class="row">
+                    <div class="col-2">
+                    </div>
+                    <div class="col-8">
+                        <h3 style="color: black !important; font-weight:700;">Servicio de Administración Tributaria</h3>
+                        <h4 style="color: black !important; font-weight:700;">Acuse de solicitud de Cancelación de CFDI</h4>
+                    </div>
+                    <div class="col-2">
+                    </div>
+                </div>
+                <br/>
+                <br/>
+                <br/>
+                <br/>
+                <div class="row">
+                    <div class="col-12">
+                        <strong style="color: black !important; font-weight:700;">Fecha y hora de solicitud:</strong>
+                        <span style="margin-left: 10px;" t-out="data['fecha_solicitud']"/>
+                    </div>
+                </div>
+                <br/>
+                <div class="row">
+                    <div class="col-12">
+                        <strong style="color: black !important; font-weight:700;">RFC Emisor:</strong>
+                        <span style="margin-left: 10px;" t-out="data['emisor_rfc']"/>
+                    </div>
+                </div>
+                <br/>
+                <table class="table-acuse">
+                    <thead>
+                        <tr>
+                            <th>
+                                <strong>Folio Fiscal</strong>
+                            </th>
+                            <th>
+                                <strong>Estatus Proceso de Cancelación</strong>
+                            </th>
+                            <th>
+                                <strong>Motivo de Cancelación</strong>
+                            </th>
+                            <th>
+                                <strong>CFDI Reemplaza</strong>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>
+                                <span t-out="data['uuid']"/>
+                            </td>
+                            <td>
+                                <span style="text-align: center;" t-esc="data.get('status_sat', 'N/A')"/>
+                            </td>
+                            <td>
+                                <span t-out="data['motivo_cancelacion']"/>
+                            </td>
+                            <td>
+                                <span t-esc="data.get('folio_sustituye', 'N/A')"/>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                <br/>
+                <div class="row">
+                    <div class="col-12">
+                        <strong style="color: black !important; font-weight:700;">Sello digital SAT:</strong>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-12" style="word-break: break-all;">
+                        <span t-out="data['sello_digital_sat']"/>
+                    </div>
+                </div>
+                <br/>
+            </div>
+        </template>
+        <template id="acuse_pdf">
+            <t t-foreach="docs" t-as="o">
+                <t t-call="web.basic_layout">
+                    <style type="text/css">
+                        body {
+                            font-size: 18px;
+                        }
+                    </style>
+                    <t t-call="l10n_mx_edi_cancellation_receipt.page_acuse"/>
+                </t>
+                <div t-attf-class="footer o_standard_footer">
+                    <div t-if="report_type == 'pdf'" class="row text-muted">
+                        <div class="col-2"></div>
+                        <div class="col-8"></div>
+                        <div class="col-2">
+                            Hoja:
+                            <span class="page"/> /
+                            <span class="topage"/>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </template>
+    </data>
+</odoo>

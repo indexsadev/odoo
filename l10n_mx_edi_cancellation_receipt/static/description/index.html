@@ -1,0 +1,118 @@
+<section class="oe_container">
+    <div class="oe_row oe_spaced">
+        <h2 class="oe_slogan" style="font-weight: bold; color: inherit;">Gestión de Acuses de Cancelación SAT (CFDI 4.0)
+        </h2>
+        <div class="oe_span12">
+            <p class="oe_mt32" style="font-size: 16px;">
+                Este módulo extiende las capacidades de la localización mexicana de Odoo para garantizar el cumplimiento
+                fiscal estricto mediante el resguardo automático del Acuse de Cancelación (PDF y XML) emitido por el
+                SAT.
+            </p>
+        </div>
+    </div>
+</section>
+
+<section class="oe_container oe_dark">
+    <div class="oe_row oe_spaced">
+        <h3 class="oe_slogan" style="font-weight: bold; color: inherit;">📄 Contexto Fiscal y Normativa</h3>
+        <div class="oe_span12">
+            <p class="text-justify">
+                La cancelación de un CFDI no es solo un proceso administrativo, es una obligación fiscal crítica. Como
+                se establece en las regulaciones del SAT y las mejores prácticas para Odoo Enterprise (v19.0+):
+            </p>
+            <ul>
+                <li><strong>Validez Fiscal:</strong> Cancelar una factura anula su existencia legal.</li>
+                <li><strong>Plazos:</strong> La cancelación debe realizarse a más tardar el 31 de enero del año
+                    siguiente a su emisión.</li>
+                <li><strong>Evidencia:</strong> Es indispensable contar con el acuse oficial que certifique que el folio
+                    fiscal (UUID) ha sido cancelado correctamente en los servidores del SAT.</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<section class="oe_container">
+    <div class="oe_row oe_spaced">
+        <h3 class="oe_slogan" style="font-weight: bold; color: inherit;">🚀 Características Principales</h3>
+        <div class="oe_span12">
+            <ul>
+                <li><strong>Descarga del PDF y XML de Acuse:</strong> Al procesar una cancelación exitosa, el módulo
+                    recupera el XML de respuesta del PAC/SAT.</li>
+                <li><strong>Adjunto Automático:</strong> El acuse se adjunta automáticamente al registro de la factura
+                    (Account Move) en el chatter para fácil auditoría.</li>
+                <li><strong>Validación de Estado:</strong> Confirma visualmente que el estado del CFDI en el SAT es
+                    "Cancelado".</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<section class="oe_container oe_dark">
+    <div class="oe_row oe_spaced">
+        <h3 class="oe_slogan" style="font-weight: bold; color: inherit;">🛠 Gestión de Motivos de Cancelación (SAT)</h3>
+        <div class="oe_span12">
+            <p>
+                Este módulo se alinea con el flujo estándar de Odoo para manejar los 4 motivos obligatorios de
+                cancelación, asegurando que el acuse generado corresponda a la justificación correcta:
+            </p>
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h4 class="panel-title">1. Motivo 01 - Comprobante emitido con errores con relación</h4>
+                </div>
+                <div class="panel-body">
+                    <ul>
+                        <li>Ideal para cuando existen errores en la factura (RFC, precios, etc.) y se requiere
+                            sustituirla.</li>
+                        <li><strong>Flujo soportado:</strong> El módulo permite vincular el acuse a la factura original
+                            y rastrear el UUID de la factura que la sustituye.</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h4 class="panel-title">2. Motivo 02 - Comprobante emitido con errores sin relación</h4>
+                </div>
+                <div class="panel-body">
+                    <ul>
+                        <li>Para errores donde no se requiere relacionar una nueva factura inmediatamente (ej. error en
+                            datos que no afectan importes directos o re-facturación posterior).</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h4 class="panel-title">3. Motivo 03 - No se llevó a cabo la operación</h4>
+                </div>
+                <div class="panel-body">
+                    <ul>
+                        <li>Cuando la venta se cae o el servicio no se presta.</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h4 class="panel-title">4. Motivo 04 - Operación nominativa relacionada en una factura global</h4>
+                </div>
+                <div class="panel-body">
+                    <ul>
+                        <li>Para correcciones específicas en facturas de público en general.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="oe_container">
+    <div class="oe_row oe_spaced">
+        <h3 class="oe_slogan" style="font-weight: bold; color: inherit;">📋 ¿Por qué usar este módulo?</h3>
+        <div class="oe_span12">
+            <p class="text-justify" style="font-size: 16px;">
+                Aunque Odoo gestiona la solicitud de cancelación, las empresas mexicanas requieren tener el archivo
+                físico (PDF y XML) del acuse para responder ante auditorías o compulsas.
+                <strong>Este módulo automatiza ese paso, evitando tener que entrar al portal del SAT para descargar los
+                    comprobantes manualmente.</strong>
+            </p>
+        </div>
+    </div>
+</section>

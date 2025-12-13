@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+        <record id="acuse_paperformat" model="report.paperformat">
+            <field name="name">Acuse report</field>
+            <field name="default" eval="False" />
+            <field name="format">Letter</field>
+            <field name="page_height">0</field>
+            <field name="page_width">0</field>
+            <field name="orientation">Portrait</field>
+            <field name="margin_top">25</field>
+            <field name="margin_bottom">15</field>
+            <field name="margin_left">15</field>
+            <field name="margin_right">15</field>
+            <field name="header_line" eval="False" />
+            <field name="header_spacing">25</field>
+            <field name="dpi">90</field>
+        </record>
+        <record id="action_report_acuse_cancel_cfdi" model="ir.actions.report">
+            <field name="name">Acuse solicitud cancelación</field>
+            <field name="model">account.move</field>
+            <field name="report_type">qweb-pdf</field>
+            <field name="report_name">l10n_mx_edi_cancellation_receipt.acuse_pdf</field>
+            <field name="report_file">l10n_mx_edi_cancellation_receipt.acuse_pdf</field>
+            <field name="attachment_use">False</field>
+            <field name="binding_type">report</field>
+            <field name="paperformat_id" ref="l10n_mx_edi_cancellation_receipt.acuse_paperformat"/>
+        </record>
+    </data>
+</odoo>
