@@ -6,14 +6,15 @@ Este módulo extiende las capacidades de la localización mexicana de Odoo para 
 
 ### Funcionalidades Principales
 
-- ✅ **Descarga automática** del XML y PDF del Acuse de Cancelación
-- ✅ **Adjunto automático** al registro de la factura en el chatter
-- ✅ **Compatibilidad** con los 3 principales PACs:
+- **Descarga automática** del XML y PDF del Acuse de Cancelación
+- **Adjunto automático** al registro de la factura en el chatter
+- **Compatibilidad** con los 3 principales PACs:
   - SW Sapiens
   - Finkok
   - Solución Factible
-- ✅ **Validación del estado del CFDI** en el SAT
-- ✅ **Trazabilidad fiscal completa** para auditorías
+- **Validación del estado del CFDI** en el SAT
+- **Actualización en tiempo real**: Regenera el acuse al detectar rechazo, aceptación o vencimiento de plazo
+- **Trazabilidad fiscal completa** para auditorías
 
 ## Contexto Fiscal
 
@@ -82,9 +83,9 @@ El PDF incluye:
 
 | Versión Odoo | Compatible |
 |--------------|------------|
-| 19.0         | ✅ Sí      |
-| 18.0         | ❌ No      |
-| 17.0         | ❌ No      |
+| 19.0         | Sí      |
+| 18.0         | No      |
+| 17.0         | No      |
 
 ## Soporte Técnico
 

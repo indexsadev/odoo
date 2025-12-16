@@ -5,6 +5,15 @@ Todos los cambios notables en este proyecto serán documentados en este archivo.
 El formato está basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/),
 y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [19.0.1.0.1] - 2025-12-16
+
+### Mejoras
+- Actualización automática del PDF y XML del acuse al detectar:
+  - Rechazo de cancelación (Solicitud rechazada)
+  - Aceptación de cancelación
+  - Vencimiento de plazo (Aceptación tácita)
+- Optimización de consultas al SAT en procesos de cancelación
+
 ## [19.0.1.0.0] - 2025-12-13
 
 ### Agregado
@@ -17,7 +26,6 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 - Compatibilidad con PAC Solución Factible
 - Validación del estado del CFDI en el SAT
 - Extracción y procesamiento del sello digital SAT
-
 ### Técnico
 - Herencia del modelo `l10n_mx_edi.document`
 - Override de métodos de cancelación por PAC:

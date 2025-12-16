@@ -1,7 +1,7 @@
 {
 	'name': 'Mexico - SAT Cancellation Acknowledgement',
 	'summary': 'Descarga y resguardo automático de acuses de cancelación CFDI 4.0 del SAT',
-	'version': '19.0.1.0.0',
+	'version': '19.0.1.0.1',
 	'description': """
 		Gestión y Resguardo del Acuse de Cancelación SAT (CFDI 4.0)
 		=============================================================

@@ -4,7 +4,6 @@
 #    Copyright (C) 2022 Indexsa Technologies
 #    @author Indexsa Technologies
 ###########################################################################
-from odoo import _, models, api, tools  # type: ignore
 import json
 import base64
 import logging
@@ -12,6 +11,7 @@ from datetime import datetime
 from pytz import timezone
 import xml.etree.ElementTree as ET
 from odoo.tools.zeep import Client, Transport # type: ignore
+from odoo import _, models, api, tools  # type: ignore
 
 
 _logger = logging.getLogger(__name__)
@@ -26,8 +26,55 @@ MOTIVOS_CANCELACION = {
 class AccountEdiXmlFormat(models.Model):
     _inherit = 'l10n_mx_edi.document'
 
+    # ========================================================================
+    # Extended methods
+    # ========================================================================
+    
 
-    def _fetch_sat_status_mod(self, supplier_rfc, customer_rfc, total, uuid):
+    def _fetch_sat_status(self, supplier_rfc, customer_rfc, total, uuid):
+        """ Override para obtener estatus completo del SAT. """
+        # Llamar a _fetch_sat_status_full para más detalles
+        results = self._fetch_sat_status_full(supplier_rfc, customer_rfc, total, uuid)
+        
+        # Determine standard 'value' based on 'statusSat'
+        status_sat = results.get('statusSat', '')
+        if status_sat == 'Vigente':
+            results['value'] = 'valid'
+        elif status_sat == 'Cancelado':
+            results['value'] = 'cancelled'
+        elif status_sat == 'No Encontrado':
+            results['value'] = 'not_found'
+        else:
+            results['value'] = 'not_defined'
+            
+        return results
+
+    def _update_sat_state(self):
+        """ Override para pasar resultados completos a _update_document_sat_state. """
+        self.ensure_one()
+        
+        # Just in case, ensure we have the attachment processed
+        cfdi_infos = self.env['l10n_mx_edi.document']._decode_cfdi_attachment(self.attachment_id.raw)
+        if not cfdi_infos:
+            return
+
+        # Obtener estatus mejorado
+        sat_results = self._fetch_sat_status(
+            cfdi_infos['supplier_rfc'],
+            cfdi_infos['customer_rfc'],
+            cfdi_infos['amount_total'],
+            cfdi_infos['uuid'],
+        )
+
+        # Actualizar si cambió estado o si está pendiente (detectar rechazo)
+        # Nota: Pasamos sat_results a _update_document_sat_state
+        if self.sat_state != sat_results['value'] or self.state in ('invoice_cancel_requested', 'payment_cancel', 'ginvoice_cancel'):
+             self._update_document_sat_state(sat_results['value'], error=sat_results.get('error'), sat_values=sat_results)
+
+             if self._can_commit():
+                self.env.cr.commit()
+
+    def _fetch_sat_status_full(self, supplier_rfc, customer_rfc, total, uuid):
         url = 'https://consultaqr.facturaelectronica.sat.gob.mx/ConsultaCFDIService.svc?wsdl'
         params = f'?id={uuid or ""}' \
                  f'&re={tools.html_escape(supplier_rfc or "")}' \
@@ -38,18 +85,25 @@ class AccountEdiXmlFormat(models.Model):
         try:
             client = Client(wsdl=url, transport=transport)
             response = client.service.Consulta(params)
-            es_cancelable = response['EsCancelable'] if hasattr(response, 'Estado') else ''
-            estatus_cancelacion = response['EstatusCancelacion'] if hasattr(response, 'Estado') else ''
+            es_cancelable = response['EsCancelable'] if hasattr(response, 'EsCancelable') else ''
+            estatus_cancelacion = response['EstatusCancelacion'] if hasattr(response, 'EstatusCancelacion') else ''
             sat_state = response['Estado'] if hasattr(response, 'Estado') else ''
-            # pylint: disable=broad-except
+            codigo_estatus = response['CodigoEstatus'] if hasattr(response, 'CodigoEstatus') else ''
         except Exception as e:
             return {
                'isCancelable': False,
-               'EstatusCancelacion': '',
-               'Estado': '',
+               'statusSat': '',
+               'statusCancelation': '',
+               'statusCodeSat': '',
+               'error': str(e),
             }
 
-        return {'isCancelable': es_cancelable, 'EstatusCancelacion': estatus_cancelacion, 'Estado': sat_state}
+        return {
+            'isCancelable': es_cancelable,
+            'statusSat': sat_state,
+            'statusCancelation': estatus_cancelacion,
+            'statusCodeSat': codigo_estatus,
+        }
 
     def _cancel_api(self, company, cancel_reason, on_failure, on_success):
         attachment_id = self.attachment_id
@@ -62,7 +116,208 @@ class AccountEdiXmlFormat(models.Model):
             )
         )._cancel_api(company, cancel_reason, on_failure, on_success)
 
-    def _proccess_acuse(self, acuse_xml, response, payload, pac_data, doc):
+
+    def _update_document_sat_state(self, sat_state, error=None, sat_values=None):
+        """ Actualiza el doc con el nuevo estado del SAT.
+
+        :param sat_state: Estado SAT retornado por '_fetch_sat_status'.
+        :param error:       Mensaje de error del SAT.
+        :param sat_values:  Diccionario completo SAT (opcional)
+
+        Llamado por _update_sat_state()
+        """
+        self.ensure_one()
+        
+        # Guardar estados previos y referencias antes de llamar al super
+        status_anterior = self.state
+        sat_state_anterior = self.sat_state
+        move = self.move_id
+        payment = None
+        if self.state in ('payment_sent', 'payment_cancel') and move:
+            payment = self.env['account.payment'].search([('move_id', '=', move.id)], limit=1)
+        
+        # Llamar al método padre para actualizar el estado (sin sat_values)
+        result = super(AccountEdiXmlFormat, self)._update_document_sat_state(sat_state, error=error)
+        
+        # Verificar si el documento actual sigue existiendo
+        doc_actual = self
+        if not self.exists():
+            if move:
+                docs = move.l10n_mx_edi_invoice_document_ids.sorted(lambda d: d.create_date, reverse=True)
+                doc_actual = docs[0] if docs else None
+                
+            if not doc_actual and payment:
+                 pass
+
+        if not doc_actual or not doc_actual.exists():
+            return result
+
+        # Detectar si hubo cambio de estado relevante usando el doc actual
+        cambio_estado = doc_actual.state != status_anterior
+        
+        estados_indefinidos = ('not_defined', 'not_found', 'error')
+        sat_anterior_indefinido = sat_state_anterior in estados_indefinidos
+        sat_actual_indefinido = doc_actual.sat_state in estados_indefinidos
+        
+        cambio_sat_state_significativo = (
+            (not sat_anterior_indefinido and not sat_actual_indefinido and doc_actual.sat_state != sat_state_anterior)
+            or (sat_anterior_indefinido != sat_actual_indefinido)
+        )
+        
+        # Si tenemos valores SAT, validar si justica regeneración (ej. Vigente pero Rechazada)
+        if sat_values and doc_actual.state == 'invoice_cancel_requested':
+             # En producción llamar comportamiento normal es Rechazada
+             if sat_values.get('statusCancelation', '') == 'Solicitud rechazada':
+                 cambio_sat_state_significativo = True
+
+        # Regenerar PDF si corresponde
+        if (cambio_estado or cambio_sat_state_significativo) and doc_actual.state in ('invoice_cancel', 'invoice_cancel_requested', 'payment_cancel', 'ginvoice_cancel'):
+            target_obj = None
+            if move and doc_actual.state in ('invoice_sent', 'invoice_cancel', 'invoice_cancel_requested', 'invoice_received'):
+                target_obj = move
+            elif payment and doc_actual.state in ('payment_sent', 'payment_cancel'):
+                target_obj = payment
+            elif doc_actual.state in ('ginvoice_sent', 'ginvoice_cancel'):
+                source_records = doc_actual._get_source_records()
+                target_obj = source_records[0] if source_records else None
+            
+            if target_obj and target_obj.exists():
+                doc_actual._update_acuse_cancelacion(target_obj, sat_state, sat_values=sat_values)
+        
+        return result
+
+    # ========================================================================
+    # Common methods
+    # ========================================================================
+
+    def _update_acuse_cancelacion(self, doc, sat_state, sat_values=None):
+        """ Actualiza el acuse de cancelación. """
+        self.ensure_one()
+
+        # Verificar que el documento CFDI esté en estado de cancelación o cancelación solicitada
+        if self.state not in ('invoice_cancel', 'invoice_cancel_requested', 'payment_cancel', 'ginvoice_cancel'):
+            return
+
+        cfdi_infos = self.env['l10n_mx_edi.document']._decode_cfdi_attachment(self.attachment_id.raw)
+        if not cfdi_infos:
+            return
+
+        if sat_values:
+            sat_results = sat_values
+        else:
+            sat_results = self._fetch_sat_status_full(
+                cfdi_infos['supplier_rfc'],
+                cfdi_infos['customer_rfc'],
+                cfdi_infos['amount_total'],
+                cfdi_infos['uuid'],
+            )
+
+        status_sat = sat_results.get('statusSat') or sat_results.get('Estado') # Fallback keys
+        
+        if status_sat:
+            # Buscar XML de cancelacion entre los anexos del doc
+            data_de_acuse = self.get_data_acuse_cancelacion(doc)
+
+            emisor_rfc = data_de_acuse.get('emisor_rfc', '')
+            fecha_solicitud = data_de_acuse.get('fecha_solicitud', '')
+            sello_val = data_de_acuse.get('sello_val', '')
+
+            motivo_codigo = self.cancellation_reason # sat_results.get('motivo', '')
+            substitution_doc = self._get_substitution_document()
+            folio_sustituye = substitution_doc.attachment_uuid or ''
+            
+            motivo_texto = MOTIVOS_CANCELACION.get(motivo_codigo, '')
+            motivo_cancelacion = f"{motivo_codigo} - {motivo_texto}" if motivo_texto else motivo_codigo
+            
+            status_sat = sat_results.get('statusSat', '')
+            status_cancelation_sat = sat_results.get('statusCancelation', '')
+            is_cancelable = sat_results.get('isCancelable', '')
+            
+            data_acuse = {
+                'uuid': self.attachment_uuid,
+                'emisor_rfc': emisor_rfc,
+                'fecha_solicitud': fecha_solicitud,
+                'motivo_cancelacion': motivo_cancelacion,
+                'sello_digital_sat': sello_val,
+                'folio_sustituye': folio_sustituye,
+                'status_sat': status_sat,
+                'status_code_sat': sat_results.get('statusCodeSat', ''),
+                'is_cancelable': is_cancelable,
+                'status_cancelation_sat': status_cancelation_sat,
+            }
+
+            if not doc or not doc.exists():
+                return 
+                
+            # Si es de un pago, anexar al pago
+            payment = self.env['account.payment'].search([('move_id', '=', doc.id)], limit=1)
+            if payment:
+                doc = payment
+
+            self._generate_acuse_pdf(doc, data_acuse, [])
+
+              
+    def get_data_acuse_cancelacion(self, doc):
+
+        # Buscar XML de cancelacion entre los anexos del doc
+
+        fname_xml = ('%s-Acuse.xml' % (doc.name)).replace('/', '')
+        attachments = self.env['ir.attachment'].search([
+            ('res_model', '=', doc._name),
+            ('res_id', '=', doc.id),
+            ('mimetype', '=', 'application/xml'),
+            ('name', '=', fname_xml),
+        ])
+
+        attach_xml = False
+
+        for attachment in attachments:
+            try:
+                xml_content = base64.b64decode(attachment.datas)
+                root = ET.fromstring(xml_content)
+                # Check for common root tags or namespaces indicating a cancellation receipt (Acuse)
+                # Example: <Acuse> or <AcuseDeCancelacion>
+                if root.tag.endswith('Acuse') or root.tag.endswith('AcuseDeCancelacion'):
+                    _logger.debug("Found cancellation XML attachment: %s for document %s", attachment.name, doc.name)
+                    attach_xml = attachment
+                    break
+            except ET.ParseError:
+                _logger.warning("Could not parse XML attachment %s for document %s", attachment.name, doc.name)
+            except Exception as e:
+                _logger.error("Error processing attachment %s for document %s: %s", attachment.name, doc.name, e)
+
+        if attach_xml:
+            acuse_xml = base64.b64decode(attach_xml.datas)
+            try:
+                root = ET.fromstring(acuse_xml)
+                ns = {
+                    'sat': 'http://cancelacfd.sat.gob.mx',
+                    'ds': 'http://www.w3.org/2000/09/xmldsig#'
+                }
+                fecha_solicitud_raw = root.attrib.get('Fecha', '')
+                emisor_rfc = root.attrib.get('RfcEmisor', '')
+                uuid_node = root.find('.//sat:Folios/sat:UUID', ns)
+                uuid_val = uuid_node.text if uuid_node is not None else ''
+                estatus_node = root.find('.//sat:Folios/sat:EstatusUUID', ns)
+                estatus_val = estatus_node.text if estatus_node is not None else ''
+                sello_node = root.find('.//ds:SignatureValue', ns)
+                sello_val = sello_node.text if sello_node is not None else ''
+            except Exception as e:
+                _logger.warning("Error parsing acuse XML: %s", e)
+                return {}
+
+            fecha_solicitud = self._format_sat_datetime(fecha_solicitud_raw)
+            emisor_rfc = root.attrib.get('RfcEmisor', '')
+
+            return {
+                'fecha_solicitud': fecha_solicitud,
+                'emisor_rfc': emisor_rfc,
+                'sello_val': sello_val,
+            }
+            
+        return {}
+
+    def _proccess_acuse(self, acuse_xml, response, payload, status_cancelation, doc):
         try:
             root = ET.fromstring(acuse_xml)
             ns = {
@@ -83,8 +338,8 @@ class AccountEdiXmlFormat(models.Model):
 
         fecha_solicitud = self._format_sat_datetime(fecha_solicitud_raw)
         emisor_rfc = root.attrib.get('RfcEmisor', '')
-        if pac_data.get('emisor_rfc_override'):
-            emisor_rfc = pac_data['emisor_rfc_override']
+        if status_cancelation.get('emisor_rfc_override'):
+            emisor_rfc = status_cancelation['emisor_rfc_override']
 
         payload_json = {}
         if payload:
@@ -102,14 +357,11 @@ class AccountEdiXmlFormat(models.Model):
         motivo_texto = MOTIVOS_CANCELACION.get(motivo_codigo, '')
         motivo_cancelacion = f"{motivo_codigo} - {motivo_texto}" if motivo_texto else motivo_codigo
         
-        status_sat = pac_data.get('statusSat', '')
-        status_cancelation_sat = pac_data.get('status_Cancelation', '')
-        is_cancelable = pac_data.get('isCancelable', '')
+        status_sat = status_cancelation.get('statusSat', '')
+        status_cancelation_sat = status_cancelation.get('statusCancelation', '')
+        is_cancelable = status_cancelation.get('isCancelable', '')
         
-        status_sat = is_cancelable or status_cancelation_sat
-            
         data_acuse = {
-            'estatus_cancelacion': estatus_val,
             'uuid': uuid_val,
             'emisor_rfc': emisor_rfc,
             'fecha_solicitud': fecha_solicitud,
@@ -118,7 +370,7 @@ class AccountEdiXmlFormat(models.Model):
             'folio_sustituye': folio_sustituye,
             'acuse_xml': acuse_xml,
             'status_sat': status_sat,
-            'status_code_sat': pac_data.get('statusCodeSat', ''),
+            'status_code_sat': status_cancelation.get('statusCodeSat', ''),
             'is_cancelable': is_cancelable,
             'status_cancelation_sat': status_cancelation_sat,
         }
@@ -141,6 +393,21 @@ class AccountEdiXmlFormat(models.Model):
             'mimetype': 'application/xml',
         })
 
+        self._generate_acuse_pdf(doc, data_acuse, [acuse_xml_attach.id])
+
+        return response
+
+    def _generate_acuse_pdf(self, doc, data_acuse, attachment_ids):
+        #
+        # Generar PDF de Acuse
+        #
+
+        if data_acuse.get('status_sat') == 'Cancelado' and not data_acuse.get('status_cancelation_sat'):
+            if data_acuse.get('isCancelable', '') == 'Cancelable con aceptacion':
+                data_acuse['status_cancelation_sat'] = 'Cancelado Con Aceptación'
+            else:
+                data_acuse['status_cancelation_sat'] = 'Cancelado Sin Aceptación'
+
         report_ref = 'l10n_mx_edi_cancellation_receipt.acuse_pdf'
         try:
             pdf_content, _ = self.env['ir.actions.report'].sudo()._render_qweb_pdf(
@@ -157,17 +424,20 @@ class AccountEdiXmlFormat(models.Model):
                 'datas': base64.b64encode(pdf_content),
                 'mimetype': 'application/pdf',
             })
+
+            attachment_ids.append(acuse_pdf_attach.id)
+
             doc.message_post(
                 body="Acuse de solicitud de cancelación",
-                attachment_ids=[acuse_xml_attach.id, acuse_pdf_attach.id]
+                attachment_ids=attachment_ids
             )
         except Exception as e:
              _logger.warning("Error generating PDF acuse: %s", e)
-             doc.message_post(
-                body="Acuse de solicitud de cancelación (sin PDF)",
-                attachment_ids=[acuse_xml_attach.id]
-            )
-        return response
+             if attachment_ids:
+                 doc.message_post(
+                    body="Acuse de solicitud de cancelación (sin PDF)",
+                    attachment_ids=attachment_ids
+                )
 
     def _format_sat_datetime(self, value):
         if not value:
@@ -195,6 +465,7 @@ class AccountEdiXmlFormat(models.Model):
         return credentials
     
 
+
     def _document_sw_call(self, url, headers, payload=None):
         if self.env.context.get("cancel_api"):
             payload = self._enhance_cancel_payload(payload)
@@ -202,10 +473,12 @@ class AccountEdiXmlFormat(models.Model):
         
         if not self.env.context.get("cancel_api"): 
             return response
-        try:
-            _logger.info(json.dumps(response, indent=2, ensure_ascii=False))
-        except Exception:
-            pass
+        
+        if _logger.isEnabledFor(logging.DEBUG):
+            try:
+                _logger.debug(json.dumps(response, indent=2, ensure_ascii=False))
+            except Exception:
+                pass
 
         if response is None or not (isinstance(response, dict) and 'cancel' in url.lower()):
             return response
@@ -213,11 +486,9 @@ class AccountEdiXmlFormat(models.Model):
         pac_data = response.get('data') or {}
         acuse_xml = pac_data.get('acuse')
 
-        if not acuse_xml:
-            return response
-        
-        doc = self.env.context.get("move")
-        self._proccess_acuse(acuse_xml, response, payload, pac_data, doc)
+        if acuse_xml:
+            self._proccess_acuse(acuse_xml, response, payload, pac_data, self.env.context.get("move"))
+
         return response
 
     def _enhance_cancel_payload(self, payload):
@@ -282,9 +553,9 @@ class AccountEdiXmlFormat(models.Model):
 
             status_response = {
                 'uuid': uuid,
-                'es_cancelable': es_cancelable,
-                'estado': estado_sat,
-                'estatus_cancelacion': estatus_cancelacion,
+                'isCancelable': es_cancelable,
+                'statusSat': estado_sat,
+                'statusCancelation': estatus_cancelacion,
                 'detalles_validacion_efos': detalles_validacion,
                 'validacion_efos': validacion_efos,
                 'codigo_estatus': codigo_estatus
@@ -351,7 +622,10 @@ class AccountEdiXmlFormat(models.Model):
 
         code = None
         msg = None
+        response_status_cancelation = None
         if 'Folios' in response and response.Folios:
+            if 'EstatusCancelacion' in response.Folios.Folio[0]:
+                response_status_cancelation = response.Folios.Folio[0].EstatusCancelacion
             if 'EstatusUUID' in response.Folios.Folio[0]:
                 response_code = response.Folios.Folio[0].EstatusUUID
                 if response_code not in ('201', '202'):
@@ -389,21 +663,21 @@ class AccountEdiXmlFormat(models.Model):
                 total=total,
             )
             
-            status_sat = status_response.get('estado', '')
-            es_cancelable = status_response.get('es_cancelable', '')
-            estatus_cancelacion = status_response.get('estatus_cancelacion', '')
+            status_sat = status_response.get('statusSat', '')
+            es_cancelable = status_response.get('isCancelable', '')
+            estatus_cancelacion = status_response.get('statusCancelation', '') or response_status_cancelation or ''
             
-            pac_data = {
+            status_cancelation = {
                 'acuse': acuse_xml_raw,
                 'statusSat': status_sat,
                 'isCancelable': es_cancelable,
-                'status_Cancelation': estatus_cancelacion,
+                'statusCancelation': estatus_cancelacion,
                 'emisor_rfc_override': rfc_emisor,
                 'statusCodeSat': response.Folios.Folio[0].EstatusUUID if hasattr(response.Folios.Folio[0], 'EstatusUUID') else '',
             }
         
             response_compatible = {
-                'data': pac_data
+                'data': status_cancelation
             }
         
             payload_finkok = json.dumps({
@@ -412,7 +686,7 @@ class AccountEdiXmlFormat(models.Model):
             }).encode('utf-8')
 
             move = self.env.context.get('move')
-            self.with_context(move=move)._proccess_acuse(acuse_xml_limpio, response_compatible, payload_finkok, pac_data, move)
+            self.with_context(move=move)._proccess_acuse(acuse_xml_limpio, response_compatible, payload_finkok, status_cancelation, move)
         
         return {}
 
@@ -426,11 +700,32 @@ class AccountEdiXmlFormat(models.Model):
             return super()._solfact_cancel(cfdi_values, credentials, uuid, cancel_reason, cancel_uuid=cancel_uuid)
         return self._solfact_cancel_acuse(cfdi_values, credentials, uuid, cancel_reason, cancel_uuid=cancel_uuid)
 
+    def _solfact_get_status_async(self, credentials, uuid):
+        """
+        Call getStatusCancelacionAsincrona to retrieve the cancellation status and acuse.
+        """
+        if 'testing.solucionfactible.com' in credentials['url']:
+            url = 'https://testing.solucionfactible.com/ws/services/Cancelacion?wsdl'
+        else:
+            url = 'https://solucionfactible.com/ws/services/Cancelacion?wsdl'
+
+        try:
+            client = Client(url, timeout=20)
+            # The default ports in the WSDL might have empty locations (causing "Invalid URL ''").
+            # We explicitly bind to the HTTPS port which has a valid location.
+            service = client.bind('Cancelacion', 'CancelacionHttpsSoap11Endpoint')
+            response_status = service.getStatusCancelacionAsincrona(
+                credentials['username'],
+                credentials['password'],
+                uuid
+            )
+            return response_status
+        except Exception as e:
+            _logger.error("Error calling getStatusCancelacionAsincrona: %s", e)
+            return None
+
     @api.model
     def _solfact_cancel_acuse(self, cfdi_values, credentials, uuid, cancel_reason, cancel_uuid=None):
-        _logger.info("="*80)
-        _logger.info("CANCELACIÓN SOLFACT")
-        _logger.info("="*80)
 
         cdmx_tz = timezone('America/Mexico_City')
         fecha_hora_solicitud = datetime.now(cdmx_tz).strftime('%Y-%m-%dT%H:%M:%S')
@@ -462,51 +757,76 @@ class AccountEdiXmlFormat(models.Model):
             response_code = str(getattr(response, "status", ""))
             mensaje = getattr(response, "mensaje", "")
 
-        _logger.info("StatusUUID: %s", response_code)
-        CANCEL_SUCCESS_CODES = ['201', '202']
-        is_cancelled_success = response_code in CANCEL_SUCCESS_CODES
-
-        if not is_cancelled_success:
-            _logger.error("Cancelación rechazada: %s", mensaje)
-            return {'errors': [mensaje or _("Cancelación rechazada con código: %s", response_code)]}
+        _logger.debug("StatusUUID: %s", response_code)
 
 
         cfdi_infos = self.env.context.get('cfdi_infos') or {}
         rfc_emisor = cfdi_infos.get('supplier_rfc', '')
         rfc_receptor = cfdi_infos.get('customer_rfc', '')
         total = cfdi_infos.get('amount_total', '')
+        
+        # Consultar el estado asíncrono para obtener el acuse oficial
+        async_response = self._solfact_get_status_async(credentials, uuid)
+        
+        acuse_xml_str = ''
+        status_cancelacion_sat = ''
+        is_cancelable = ''
+        estado_sat = ''
 
-        estado_sat = self._fetch_sat_status_mod(rfc_emisor, rfc_receptor, total, cfdi_infos['uuid'])
-        is_cancelable = estado_sat.get('isCancelable', '')
-        if self.env.company.test_mode and not is_cancelable:
-            is_cancelable = 'Cancelable sin aceptacion'
+        if async_response:
+            # Si el estatus es de 'En proceso'
+            if hasattr(async_response, 'mensaje') and async_response.mensaje and '<?xml' in async_response.mensaje:
+                acuse_xml_str = async_response.mensaje
+            elif hasattr(async_response, 'resultados') and async_response.resultados:
+                pass
+
+        if async_response and hasattr(async_response, 'mensaje') and async_response.mensaje and async_response.mensaje.startswith('<'):
+            # Acuse del async.
+            acuse_limpio = async_response.mensaje
+        else:
+            # Fallback si no hay acuse oficial aun (ej. en proceso).
+            acuse_limpio = self.build_acuse_solucion_factible(response, rfc_emisor, cancel_reason=cancel_reason, fecha_hora=fecha_hora_solicitud)
+
+
+        CANCEL_SUCCESS_CODES = ['201', '202', '200'] 
+        is_cancelled_success = response_code in CANCEL_SUCCESS_CODES
+
+        if not is_cancelled_success:
+            _logger.error("Cancelación rechazada: %s", mensaje)
+            return {'errors': [mensaje or _("Cancelación rechazada con código: %s", response_code)]}
+
+        # Consulta al SAT
+        estado_sat_info = self._fetch_sat_status_full(rfc_emisor, rfc_receptor, total, cfdi_infos['uuid'])
+        is_cancelable = estado_sat_info.get('isCancelable', '')
             
-        acuse_limpio = self.build_acuse_solucion_factible(response, rfc_emisor, cancel_reason=cancel_reason, fecha_hora=fecha_hora_solicitud)
+        # Acuse correcto
+        if not acuse_xml_str and acuse_limpio:
+            acuse_xml_str = acuse_limpio
 
         response_data = {
             'uuid': uuid,
             'cancel_status': response_code,
             'mensaje': mensaje,
-            'consulta_estado': estado_sat,
-            'acuse_xml': acuse_limpio,
+            'consulta_estado': estado_sat_info,
+            'acuse_xml': acuse_xml_str,
             'rfc_emisor': rfc_emisor,
         }
 
-        pac_data = {
+        status_cancelation = {
             'statusSat': is_cancelable,
-            'status_Cancelation': response_code,
+            'statusCancelation': response_code,
             'isCancelable': is_cancelable,
-            'statusCodeSat': estado_sat.get('Estado', ''),
+            'statusCodeSat': estado_sat_info.get('statusSat', ''),
             'emisor_rfc_override': None,
         }
 
         payload = json.dumps({'motivo': cancel_reason, 'folioSustitucion': cancel_uuid}).encode('utf-8')
 
         return self._proccess_acuse(
-            acuse_xml=acuse_limpio,
+            acuse_xml=acuse_xml_str,
             response=response_data,
             payload=payload,
-            pac_data=pac_data,
+            status_cancelation=status_cancelation,
             doc=self.env.context.get('move')
         )
 
@@ -532,30 +852,45 @@ class AccountEdiXmlFormat(models.Model):
         motivo_texto = f"{cancel_reason} - {MOTIVOS_CANCELACION.get(cancel_reason,'')}" if cancel_reason else ''
 
         fecha_hora_iso = fecha_hora or datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+
+        rfc_emisor = rfc_emisor or self.env.context.get('cfdi_infos', {}).get('supplier_rfc', '') or ''
         
-        root = ET.Element('CancelaCFDResult', {
-            'xmlns': 'http://cancelacfd.sat.gob.mx',
+        # Root Element "Acuse"
+        root = ET.Element('Acuse', {
+            'xmlns:xsd': 'http://www.w3.org/2001/XMLSchema',
+            'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
             'Fecha': fecha_hora_iso,
-            'RfcEmisor': rfc_emisor,
+            'RfcEmisor': rfc_emisor
         })
 
-        # Agregar Folios
-        folios = ET.SubElement(root, 'Folios')
-        ET.SubElement(folios, 'UUID').text = resultado['uuid']
-        ET.SubElement(folios, 'EstatusUUID').text = resultado['statusUUID']
+        # Folios element with explicit namespace
+        folios = ET.SubElement(root, 'Folios', {'xmlns': 'http://cancelacfd.sat.gob.mx'})
+        ET.SubElement(folios, 'UUID').text = resultado['uuid'] or ''
+        ET.SubElement(folios, 'EstatusUUID').text = resultado['statusUUID'] or ''
 
-        # Agregar Signature
-        signature = ET.SubElement(root, 'Signature', {'xmlns': 'http://www.w3.org/2000/09/xmldsig#', 'Id': 'SelloSAT'})
+        # Signature
+        signature = ET.SubElement(root, 'Signature', {'xmlns': 'http://www.w3.org/2000/09/xmldsig#'})
         signed_info = ET.SubElement(signature, 'SignedInfo')
-        reference = ET.SubElement(signed_info, 'Reference', {'URI': ''})
-        ET.SubElement(reference, 'DigestMethod', {'Algorithm': 'http://www.w3.org/2001/04/xmlenc#sha512'})
-        ET.SubElement(reference, 'DigestValue').text = digest_val.replace('\n', '')
-        ET.SubElement(signature, 'SignatureValue').text = acuse_val.replace('\n', '')
-        key_info = ET.SubElement(signature, 'KeyInfo')
-        ET.SubElement(key_info, 'KeyName').text = certificado_val
+        
+        # Canonicalization and SignatureMethod (Standard values)
+        ET.SubElement(signed_info, 'CanonicalizationMethod', {'Algorithm': 'http://www.w3.org/TR/2001/REC-xml-c14n-20010315'})
+        ET.SubElement(signed_info, 'SignatureMethod', {'Algorithm': 'http://www.w3.org/2000/09/xmldsig#rsa-sha1'})
 
-        # Nodo para motivo de cancelación
-        ET.SubElement(root, 'MotivoCancelacion').text = motivo_texto
+        reference = ET.SubElement(signed_info, 'Reference', {'URI': ''})
+        
+        # Transforms
+        transforms = ET.SubElement(reference, 'Transforms')
+        ET.SubElement(transforms, 'Transform', {'Algorithm': 'http://www.w3.org/2000/09/xmldsig#enveloped-signature'})
+
+        ET.SubElement(reference, 'DigestMethod', {'Algorithm': 'http://www.w3.org/2001/04/xmlenc#sha512'})
+        ET.SubElement(reference, 'DigestValue').text = (digest_val or '').replace('\n', '')
+
+        ET.SubElement(signature, 'SignatureValue').text = (acuse_val or '').replace('\n', '')
+        
+        key_info = ET.SubElement(signature, 'KeyInfo')
+        ET.SubElement(key_info, 'KeyName').text = certificado_val or ''
 
         # Convertir a string XML
+        # return ET.tostring(root, encoding='utf-8')
         return ET.tostring(root, encoding='unicode')
+

@@ -55,6 +55,9 @@
                                 <strong>Folio Fiscal</strong>
                             </th>
                             <th>
+                                <strong>Estatus</strong>
+                            </th>
+                            <th>
                                 <strong>Estatus Proceso de Cancelación</strong>
                             </th>
                             <th>
@@ -71,13 +74,16 @@
                                 <span t-out="data['uuid']"/>
                             </td>
                             <td>
-                                <span style="text-align: center;" t-esc="data.get('status_sat', 'N/A')"/>
+                                <span style="text-align: center;" t-esc="data.get('status_sat', '')"/>
+                            </td>
+                            <td>
+                                <span style="text-align: center;" t-esc="data.get('status_cancelation_sat', '')"/>
                             </td>
                             <td>
                                 <span t-out="data['motivo_cancelacion']"/>
                             </td>
                             <td>
-                                <span t-esc="data.get('folio_sustituye', 'N/A')"/>
+                                <span t-esc="data.get('folio_sustituye', '')"/>
                             </td>
                         </tr>
                     </tbody>
