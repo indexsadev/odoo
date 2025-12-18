@@ -1,7 +1,7 @@
 # -*- encoding: utf-8 -*-
 ###########################################################################
 #    Indexsa Technologies
-#    Copyright (C) 2022 Indexsa Technologies
+#    Copyright (C) 2025 Indexsa Technologies
 #    @author Indexsa Technologies
 ###########################################################################
 import json
